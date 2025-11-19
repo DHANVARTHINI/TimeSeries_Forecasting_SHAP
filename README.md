@@ -131,7 +131,7 @@ Across the 10 critical timestamps:
 
 These discrepancies highlight why SHAP is needed—gain alone cannot explain local or interaction dynamics.
 
-#Summary
+# Summary
 
 This project successfully demonstrates how SHAP can provide transparent explanations for a complex gradient-boosted time-series forecasting model. The LightGBM model shows strong reliance on recent demand patterns, while SHAP reveals nuanced interactions and localized feature effects.
 
