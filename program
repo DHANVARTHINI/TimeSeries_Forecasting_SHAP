@@ -1,0 +1,582 @@
+"""
+store_sales_shap_fixed_v4.py
+
+Fixed end-to-end pipeline:
+- Repaired LightGBM 4.x callback usage
+- RMSE computed as sqrt(MSE) for sklearn compatibility
+- Grouped lag & rolling features
+- SHAP global + local explanations (10 high-impact points)
+- Robust path handling and defensive checks
+- Fixed categorical dtype mismatch and numeric 'object' dtype issues for SHAP local explanations
+
+Save and run with: python store_sales_shap_fixed_v4.py
+"""
+import os
+import sys
+import warnings
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import lightgbm as lgb
+import shap
+import matplotlib.pyplot as plt
+import joblib
+
+warnings.filterwarnings("ignore")
+np.random.seed(42)
+
+# ---------------- USER CONFIG ----------------
+DATA_DIR = r"C:\Users\dhane\Downloads\TimeSeries_Forecasting_SHAP"
+OUTPUT_DIR = r"C:\Users\dhane\Downloads\TimeSeries_Forecasting_SHAP\output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+TRAIN_CSV = os.path.join(DATA_DIR, "train.csv")
+STORES_CSV = os.path.join(DATA_DIR, "stores.csv")
+OIL_CSV = os.path.join(DATA_DIR, "oil.csv")
+HOLIDAYS_CSV = os.path.join(DATA_DIR, "holidays_events.csv")
+TRANSACTIONS_CSV = os.path.join(DATA_DIR, "transactions.csv")
+TEST_CSV = os.path.join(DATA_DIR, "test.csv")  # optional
+
+TARGET = "sales"
+
+LGB_PARAMS = {
+    "objective": "regression",
+    "metric": "rmse",
+    "boosting_type": "gbdt",
+    "learning_rate": 0.05,
+    "num_leaves": 127,
+    "min_data_in_leaf": 100,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "n_jobs": -1,
+    "seed": 42,
+    "verbosity": -1,
+}
+
+# limit rows for quick tests (set to None to use all data)
+MAX_ROWS = None
+# ---------------------------------------------
+
+
+def safe_read_csv(path, parse_dates=None):
+    if not os.path.exists(path):
+        print(f"Warning: {os.path.basename(path)} not found at {path}. Continuing without it.")
+        return None
+    return pd.read_csv(path, parse_dates=parse_dates)
+
+
+def load_data():
+    print("Loading CSVs from:", DATA_DIR)
+    train = safe_read_csv(TRAIN_CSV, parse_dates=["date"])
+    stores = safe_read_csv(STORES_CSV)
+    oil = safe_read_csv(OIL_CSV, parse_dates=["date"])
+    holidays = safe_read_csv(HOLIDAYS_CSV, parse_dates=["date"])
+    transactions = safe_read_csv(TRANSACTIONS_CSV, parse_dates=["date"])
+    test = safe_read_csv(TEST_CSV, parse_dates=["date"])
+    if train is None:
+        print("Error: train.csv is required. Place it in DATA_DIR and re-run.")
+        sys.exit(1)
+    return train, stores, oil, holidays, transactions, test
+
+
+def preprocess_and_merge(train, stores, oil, holidays, transactions):
+    print("Preprocessing and merging...")
+    df = train.copy()
+    if MAX_ROWS:
+        df = df.head(MAX_ROWS)
+
+    # Ensure expected columns exist
+    if "store_nbr" not in df.columns or "family" not in df.columns or "date" not in df.columns:
+        raise ValueError("train.csv missing one of required columns: 'date', 'store_nbr', 'family'")
+
+    # Merge store metadata if present
+    if stores is not None:
+        df = df.merge(stores, how="left", on="store_nbr")
+    else:
+        print("stores.csv missing -> skipping store metadata merge")
+
+    # Merge transactions if present
+    if transactions is not None:
+        df = df.merge(transactions, how="left", on=["date", "store_nbr"])
+    else:
+        print("transactions.csv missing -> continuing without transactions")
+
+    # Merge oil if present (column often 'dcoilwtico')
+    if oil is not None:
+        df = df.merge(oil, how="left", on="date")
+    else:
+        print("oil.csv missing -> continuing without oil")
+
+    # Holidays: create is_holiday flag
+    if holidays is not None:
+        holidays_ = holidays.copy()
+        holidays_["is_holiday"] = 1
+        holidays_ = holidays_[["date", "is_holiday"]].drop_duplicates()
+        df = df.merge(holidays_, how="left", on="date")
+        df["is_holiday"] = df["is_holiday"].fillna(0).astype(int)
+    else:
+        df["is_holiday"] = 0
+        print("holidays_events.csv missing -> no holiday flags")
+
+    # Fill/normalize columns that may be missing
+    if "onpromotion" not in df.columns:
+        df["onpromotion"] = 0
+    if "transactions" not in df.columns:
+        df["transactions"] = 0
+    # Fill oil numeric if exists
+    oil_cols = [c for c in df.columns if c and ("dcoil" in c.lower() or "oil" in c.lower())]
+    if oil_cols:
+        df[oil_cols] = df[oil_cols].fillna(method="ffill").fillna(method="bfill").fillna(0)
+        # unify to dcoilwtico if present
+        if "dcoilwtico" not in df.columns:
+            df["dcoilwtico"] = df[oil_cols[0]]
+    else:
+        df["dcoilwtico"] = 0.0
+
+    # Sort
+    df = df.sort_values(["store_nbr", "family", "date"]).reset_index(drop=True)
+    print("Merged shape:", df.shape)
+    return df
+
+
+def create_date_features(df):
+    print("Creating date features...")
+    df["dayofweek"] = df["date"].dt.dayofweek
+    df["weekofyear"] = df["date"].dt.isocalendar().week.astype(int)
+    df["month"] = df["date"].dt.month
+    df["day"] = df["date"].dt.day
+    df["year"] = df["date"].dt.year
+    df["is_weekend"] = df["dayofweek"].isin([5, 6]).astype(int)
+    # cyclical encodings
+    df["dow_sin"] = np.sin(2 * np.pi * df["dayofweek"] / 7)
+    df["dow_cos"] = np.cos(2 * np.pi * df["dayofweek"] / 7)
+    df["month_sin"] = np.sin(2 * np.pi * (df["month"] - 1) / 12)
+    df["month_cos"] = np.cos(2 * np.pi * (df["month"] - 1) / 12)
+    return df
+
+
+def create_lag_features(df, lags=[1, 7, 14, 28]):
+    """
+    Create grouped lags and rolling features using groupby.transform to avoid multiindex issues.
+    """
+    print("Creating lag and rolling features (group-aware)...")
+    group_cols = ["store_nbr", "family"]
+    # lags
+    for lag in lags:
+        df[f"lag_{lag}"] = df.groupby(group_cols)[TARGET].shift(lag)
+
+    # rolling means & std via transform (shifted to avoid leakage)
+    df["rolling_7_mean"] = df.groupby(group_cols)[TARGET].transform(
+        lambda x: x.shift(1).rolling(window=7, min_periods=1).mean()
+    )
+    df["rolling_14_mean"] = df.groupby(group_cols)[TARGET].transform(
+        lambda x: x.shift(1).rolling(window=14, min_periods=1).mean()
+    )
+    df["rolling_7_std"] = df.groupby(group_cols)[TARGET].transform(
+        lambda x: x.shift(1).rolling(window=7, min_periods=1).std()
+    ).fillna(0)
+    df["rolling_14_std"] = df.groupby(group_cols)[TARGET].transform(
+        lambda x: x.shift(1).rolling(window=14, min_periods=1).std()
+    ).fillna(0)
+
+    # fill lag NaNs with 0 (or could drop initial rows)
+    lag_cols = [c for c in df.columns if c.startswith("lag_")]
+    df[lag_cols] = df[lag_cols].fillna(0)
+    return df
+
+
+def encode_categoricals(df):
+    print("Encoding categorical features as category dtype...")
+    cat_cols = []
+    for c in ["family", "type", "cluster", "state"]:
+        if c in df.columns:
+            # convert to category and ensure categories are stable
+            df[c] = df[c].astype("category")
+            cat_cols.append(c)
+    return df, cat_cols
+
+
+def prepare_features(df):
+    df = create_date_features(df)
+    df = create_lag_features(df, lags=[1, 7, 14, 28])
+    df, cat_cols = encode_categoricals(df)
+
+    feature_cols = [
+        "dayofweek",
+        "weekofyear",
+        "month",
+        "day",
+        "year",
+        "is_weekend",
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+        "lag_1",
+        "lag_7",
+        "lag_14",
+        "lag_28",
+        "rolling_7_mean",
+        "rolling_14_mean",
+        "rolling_7_std",
+        "rolling_14_std",
+        "onpromotion",
+        "transactions",
+        "is_holiday",
+        "type",
+        "cluster",
+        "state",
+        "dcoilwtico",
+    ]
+    feature_cols = [c for c in feature_cols if c in df.columns]
+    print("Final feature count:", len(feature_cols))
+    return df, feature_cols, cat_cols
+
+
+def train_lightgbm(df, feature_cols, categorical_features, val_period_days=90):
+    print("Preparing time-based train/validation split...")
+    df_train = df.dropna(subset=feature_cols + [TARGET]).copy()
+
+    max_date = df_train["date"].max()
+    val_start = max_date - pd.Timedelta(days=val_period_days)
+    train_mask = df_train["date"] < val_start
+    val_mask = df_train["date"] >= val_start
+
+    X_train = df_train.loc[train_mask, feature_cols]
+    y_train = df_train.loc[train_mask, TARGET]
+    X_val = df_train.loc[val_mask, feature_cols]
+    y_val = df_train.loc[val_mask, TARGET]
+
+    print(f"Train rows: {X_train.shape[0]}, Val rows: {X_val.shape[0]}")
+
+    lgb_train = lgb.Dataset(
+        X_train,
+        label=y_train,
+        categorical_feature=[c for c in categorical_features if c in feature_cols],
+        free_raw_data=False,
+    )
+    lgb_val = lgb.Dataset(X_val, label=y_val, reference=lgb_train, free_raw_data=False)
+
+    # -------------------------------
+    # NEW LightGBM 4.x callback API
+    # -------------------------------
+    callbacks = [lgb.early_stopping(stopping_rounds=50, verbose=True), lgb.log_evaluation(period=100)]
+
+    print("Training LightGBM (LGBM v4.x callbacks)...")
+    model = lgb.train(LGB_PARAMS, lgb_train, valid_sets=[lgb_train, lgb_val], valid_names=["train", "valid"], num_boost_round=2000, callbacks=callbacks)
+
+    val_pred = model.predict(X_val, num_iteration=model.best_iteration)
+
+    # --- FIXED: compute RMSE via sqrt(MSE) for sklearn compatibility ---
+    mse = mean_squared_error(y_val, val_pred)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y_val, val_pred)
+    print(f"Validation RMSE: {rmse:.4f}, MAE: {mae:.4f}")
+
+    # return df_train so we can capture dtypes later
+    return {
+        "model": model,
+        "X_val": X_val,
+        "y_val": y_val,
+        "val_index": df_train.loc[val_mask].index,
+        "df_train": df_train,
+    }
+
+
+def save_lgb_importance(model, feature_cols):
+    print("Saving LightGBM feature importance...")
+    imp_gain = model.feature_importance(importance_type="gain")
+    imp_split = model.feature_importance(importance_type="split")
+    imp_df = pd.DataFrame({"feature": feature_cols, "gain": imp_gain, "split": imp_split}).sort_values("gain", ascending=False)
+    imp_df.to_csv(os.path.join(OUTPUT_DIR, "lgb_feature_importance.csv"), index=False)
+    plt.figure(figsize=(8, 6))
+    imp_df.head(30).plot.barh(x="feature", y="gain", legend=False)
+    plt.gca().invert_yaxis()
+    plt.title("LightGBM feature importance (gain)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "lgb_feature_importance_gain.png"))
+    plt.close()
+    return imp_df
+
+
+def compute_shap(model, X_background, X_val, max_bg=2000, max_val=2000):
+    print("Computing SHAP values using TreeExplainer (sampled for speed)...")
+    explainer = shap.TreeExplainer(model)
+    # background sample
+    X_bg = X_background.sample(n=min(len(X_background), max_bg), random_state=42) if X_background.shape[0] > 0 else X_val.sample(n=min(len(X_val), max_bg), random_state=42)
+    X_val_sub = X_val.sample(n=min(len(X_val), max_val), random_state=42)
+    shap_values = explainer.shap_values(X_val_sub)
+    joblib.dump({"explainer": explainer, "X_bg": X_bg, "X_val_sub": X_val_sub, "shap_values": shap_values}, os.path.join(OUTPUT_DIR, "shap_explainer.pkl"))
+    print("SHAP computed and saved.")
+    return explainer, X_bg, X_val_sub, shap_values
+
+
+def save_shap_global_plots(explainer, X_val_sub, shap_values):
+    print("Saving SHAP global plots...")
+    # bar
+    plt.figure(figsize=(8, 8))
+    shap.summary_plot(shap_values, X_val_sub, plot_type="bar", show=False)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "shap_summary_bar.png"))
+    plt.close()
+    # dot
+    plt.figure(figsize=(10, 10))
+    shap.summary_plot(shap_values, X_val_sub, show=False)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "shap_summary_dot.png"))
+    plt.close()
+
+
+def select_top10_high_impact(model_output, df_small):
+    print("Selecting top 10 high-impact points (largest abs residuals in validation)...")
+    model = model_output["model"]
+    X_val = model_output["X_val"]
+    y_val = model_output["y_val"]
+    val_idx = model_output["val_index"]
+    y_pred = model.predict(X_val, num_iteration=model.best_iteration)
+    resid = np.abs(y_val.values - y_pred)
+    resid_series = pd.Series(resid, index=val_idx)
+    top10_idx = resid_series.sort_values(ascending=False).head(10).index.tolist()
+    points = df_small.loc[top10_idx].copy()
+    # add preds & residuals
+    index_list = list(val_idx)
+    # y_pred is aligned to X_val's ordering. Map predictions by index.
+    pred_by_index = {idx: pred for idx, pred in zip(val_idx, y_pred)}
+    points["y_true"] = df_small.loc[top10_idx, TARGET].values
+    points["y_pred"] = [pred_by_index.get(i, np.nan) for i in top10_idx]
+    points["abs_resid"] = np.abs(points["y_true"] - points["y_pred"])
+    points = points.sort_values("abs_resid", ascending=False)
+    points.to_csv(os.path.join(OUTPUT_DIR, "top10_high_impact_points.csv"), index=False)
+    print("Top10 saved.")
+    return points
+
+
+def save_local_shap_for_points(explainer, points_df, feature_cols, train_dtypes):
+    """
+    Save local SHAP explanations for each high-impact point.
+
+    explainer: shap.TreeExplainer
+    points_df: dataframe of top points (should contain original columns like date, store_nbr, family, TARGET)
+    feature_cols: list of features to feed to the model/explainer
+    train_dtypes: pd.Series of dtypes for the training X (feature_cols) used during training
+    """
+    print("Saving local SHAP explanations for each high-impact point...")
+    texts = []
+    for i, (_, row) in enumerate(points_df.iterrows(), start=1):
+        # Extract row for SHAP
+        X_row = row[feature_cols].to_frame().T.copy()
+
+        # --- VERY IMPORTANT FIX FOR CATEGORICALS ---
+        # Force categorical columns to match the exact dtype + categories used in training
+        for col, dtype in train_dtypes.items():
+            if col not in X_row.columns:
+                continue
+            if "category" in str(dtype):
+                # cast to category
+                X_row[col] = X_row[col].astype("category")
+                # ensure the same categories (and order) if available
+                try:
+                    X_row[col] = X_row[col].cat.set_categories(dtype.categories)
+                except Exception:
+                    # fallback attempts - keep the category dtype if alignment fails
+                    try:
+                        cats = dtype.categories
+                        X_row[col] = X_row[col].cat.set_categories(cats)
+                    except Exception:
+                        pass
+
+        # --- VERY IMPORTANT FIX FOR NUMERIC DTYPES ---
+        # Ensure all non-categorical features use the same numeric dtype as training.
+        # This prevents pandas converting numeric values to object when extracting single rows.
+        for col in feature_cols:
+            if col not in X_row.columns:
+                continue
+            train_dtype = train_dtypes.get(col, None)
+            # skip categorical ones here
+            if train_dtype is not None and "category" in str(train_dtype):
+                continue
+            # If dtype is numeric-like (int/float/bool), cast accordingly
+            if train_dtype is not None:
+                try:
+                    # If train_dtype is a numpy dtype or pandas dtype, attempt astype directly
+                    X_row[col] = X_row[col].astype(train_dtype)
+                except Exception:
+                    # robust fallback: convert to numeric (coerce errors) then cast to float64
+                    try:
+                        X_row[col] = pd.to_numeric(X_row[col], errors="coerce").astype("float64")
+                    except Exception:
+                        # final fallback: keep as float64
+                        X_row[col] = pd.to_numeric(X_row[col], errors="coerce").astype("float64")
+            else:
+                # no train dtype info -> convert to numeric best-effort
+                try:
+                    X_row[col] = pd.to_numeric(X_row[col], errors="coerce").astype("float64")
+                except Exception:
+                    X_row[col] = pd.to_numeric(X_row[col], errors="coerce").astype("float64")
+
+        # Optional debug: inspect dtypes (comment out in production)
+        # print("X_row dtypes:", X_row.dtypes)
+
+        # Now compute shap values for this single-row dataframe
+        shap_vals = explainer.shap_values(X_row)
+        # shap_vals can be array or list depending on explainer; handle both robustly
+        if isinstance(shap_vals, list):
+            arr = np.array(shap_vals[0])
+            if arr.ndim == 2:
+                shap_vals_row = arr[0]
+            else:
+                shap_vals_row = arr.flatten()
+        else:
+            arr = np.array(shap_vals)
+            if arr.ndim == 2:
+                shap_vals_row = arr[0]
+            else:
+                shap_vals_row = arr.flatten()
+
+        # Build contribution dataframe
+        contrib = pd.DataFrame(
+            {
+                "feature": feature_cols,
+                "shap_value": shap_vals_row,
+                "feature_value": X_row.iloc[0].values,
+            }
+        )
+        contrib["abs_shap"] = np.abs(contrib["shap_value"])
+        contrib = contrib.sort_values("abs_shap", ascending=False).reset_index(drop=True)
+
+        # save bar plot
+        fig, ax = plt.subplots(figsize=(8, 6))
+        contrib.head(20).plot.barh(x="feature", y="shap_value", ax=ax, legend=False)
+        ax.invert_yaxis()
+        # date/store/family may exist in points_df
+        date_str = row["date"] if "date" in row.index else ""
+        store_str = row["store_nbr"] if "store_nbr" in row.index else ""
+        family_str = row["family"] if "family" in row.index else ""
+        ax.set_title(f"Local SHAP - point {i} (date={date_str}, store={store_str}, family={family_str})")
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"local_shap_point_{i}_bar.png"))
+        plt.close()
+
+        # save CSV of contributions
+        contrib.to_csv(os.path.join(OUTPUT_DIR, f"local_shap_point_{i}_contribs.csv"), index=False)
+
+        # textual summary
+        pos = contrib[contrib["shap_value"] > 0].head(5)
+        neg = contrib[contrib["shap_value"] < 0].head(5)
+        true_val = row[TARGET] if TARGET in row.index else np.nan
+        pred_val = row["y_pred"] if "y_pred" in row.index else np.nan
+        abs_resid = row["abs_resid"] if "abs_resid" in row.index else np.abs(true_val - pred_val) if (not np.isnan(true_val) and not np.isnan(pred_val)) else np.nan
+
+        txt = f"Point {i} | date={date_str} | store={store_str} | family={family_str}\n"
+        txt += f" True={true_val:.2f} Pred={pred_val:.2f} AbsResid={abs_resid:.2f}\n"
+        txt += " Top positive contributors:\n"
+        for _, r in pos.iterrows():
+            txt += f"  - {r['feature']}: shap={r['shap_value']:.4f}, val={r['feature_value']}\n"
+        txt += " Top negative contributors:\n"
+        for _, r in neg.iterrows():
+            txt += f"  - {r['feature']}: shap={r['shap_value']:.4f}, val={r['feature_value']}\n"
+        texts.append(txt)
+
+    with open(os.path.join(OUTPUT_DIR, "local_shap_explanations.txt"), "w") as f:
+        f.write("\n\n".join(texts))
+    print("Local SHAP files and textual explanations saved.")
+
+
+def compare_and_report(imp_df, explainer, X_val_sub, shap_values, model_output):
+    print("Comparing importance and generating report...")
+    # shap mean abs
+    if isinstance(shap_values, list):
+        arr = np.array(shap_values[0])
+    else:
+        arr = np.array(shap_values)
+    shap_abs_mean = np.mean(np.abs(arr), axis=0)
+    shap_imp_df = pd.DataFrame({"feature": X_val_sub.columns, "shap_abs_mean": shap_abs_mean}).sort_values("shap_abs_mean", ascending=False)
+    shap_imp_df.to_csv(os.path.join(OUTPUT_DIR, "shap_feature_importance.csv"), index=False)
+
+    merged = imp_df.merge(shap_imp_df, left_on="feature", right_on="feature", how="outer").fillna(0).sort_values("shap_abs_mean", ascending=False)
+    merged.to_csv(os.path.join(OUTPUT_DIR, "importance_comparison.csv"), index=False)
+
+    # generate textual report
+    model = model_output["model"]
+    X_val = model_output["X_val"]
+    y_val = model_output["y_val"]
+    y_pred = model.predict(X_val, num_iteration=model.best_iteration)
+
+    # --- FIXED: compute RMSE via sqrt(MSE) for sklearn compatibility ---
+    mse = mean_squared_error(y_val, y_pred)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y_val, y_pred)
+
+    lines = []
+    lines.append("=== Model & SHAP Report ===")
+    lines.append(f"Generated: {datetime.now().isoformat()}")
+    lines.append("")
+    lines.append("-- Validation performance --")
+    lines.append(f"RMSE: {rmse:.4f}")
+    lines.append(f"MAE: {mae:.4f}")
+    lines.append("")
+    lines.append("-- Top features by SHAP (mean abs) --")
+    for feat, val in shap_imp_df.head(10).values:
+        lines.append(f"  {feat}: {val:.4f}")
+    lines.append("")
+    lines.append("-- Top features by LightGBM gain --")
+    for feat, val in imp_df[["feature", "gain"]].head(10).values:
+        lines.append(f"  {feat}: {val:.4f}")
+    lines.append("")
+    lines.append("-- High-level interpretation --")
+    lines.append("SHAP mean-abs ranking shows per-sample contribution magnitude. LightGBM gain shows average split gains. "
+                 "Discrepancies can flag frequently used but low-impact features or rare high-impact features.")
+    with open(os.path.join(OUTPUT_DIR, "model_shap_report.txt"), "w") as f:
+        f.write("\n".join(lines))
+
+    print("Report saved.")
+
+
+def main():
+    train, stores, oil, holidays, transactions, test = load_data()
+    df = preprocess_and_merge(train, stores, oil, holidays, transactions)
+    df, feature_cols, cat_cols = prepare_features(df)
+
+    # Keep minimal columns for further processing to save memory
+    keep_cols = ["date", "store_nbr", "family", TARGET] + feature_cols
+    df_small = df[keep_cols].copy()
+
+    model_output = train_lightgbm(df_small, feature_cols, categorical_features=cat_cols, val_period_days=90)
+
+    # Store training dtypes (required for SHAP local explanations)
+    # We capture the dtypes of the training DataFrame used in train_lightgbm
+    model_output["train_dtypes"] = model_output["df_train"][feature_cols].dtypes
+
+    imp_df = save_lgb_importance(model_output["model"], feature_cols)
+
+    # background sample for SHAP: earlier portion of df_train
+    df_train_full = model_output["df_train"]
+    cutoff_bg = df_train_full["date"].max() - pd.Timedelta(days=180)
+    X_background = df_train_full.loc[df_train_full["date"] < cutoff_bg, feature_cols]
+    if X_background.shape[0] < 50:
+        X_background = df_train_full[feature_cols]
+
+    explainer, X_bg, X_val_sub, shap_values = compute_shap(model_output["model"], X_background, model_output["X_val"], max_bg=2000, max_val=2000)
+
+    save_shap_global_plots(explainer, X_val_sub, shap_values)
+
+    top10 = select_top10_high_impact(model_output, df_small)
+
+    # pass train_dtypes to ensure categorical & numeric alignment for SHAP
+    save_local_shap_for_points(explainer, top10, feature_cols, model_output["train_dtypes"])
+
+    compare_and_report(imp_df, explainer, X_val_sub, shap_values, model_output)
+
+    print("All done. Outputs saved to:", OUTPUT_DIR)
+    print("Files produced (examples):")
+    for f in ["lgb_feature_importance.csv", "shap_summary_bar.png", "shap_summary_dot.png",
+              "top10_high_impact_points.csv", "local_shap_point_1_bar.png", "local_shap_explanations.txt",
+              "importance_comparison.csv", "model_shap_report.txt"]:
+        print(" -", os.path.join(OUTPUT_DIR, f))
+
+
+if __name__ == "__main__":
+    main()
