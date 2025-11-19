@@ -1,0 +1,158 @@
+Point 1 | date=2017-06-25 00:00:00 | store=54 | family=BEVERAGES
+ True=17614.00 Pred=4381.00 AbsResid=13233.00
+ Top positive contributors:
+  - rolling_7_mean: shap=1872.3552, val=2950.8571428571427
+  - lag_7: shap=1316.4996, val=8310.0
+  - lag_14: shap=629.0413, val=13889.0
+  - lag_1: shap=415.7896, val=2043.0
+  - onpromotion: shap=215.2527, val=30
+ Top negative contributors:
+  - transactions: shap=-720.6965, val=1003.0
+  - rolling_7_std: shap=-146.1172, val=2508.84876843088
+  - lag_28: shap=-123.7132, val=2683.0
+  - is_holiday: shap=-38.5347, val=1
+  - month_sin: shap=-16.5739, val=0.49999999999999994
+
+
+Point 2 | date=2017-05-17 00:00:00 | store=54 | family=GROCERY I
+ True=13533.00 Pred=2640.30 AbsResid=10892.70
+ Top positive contributors:
+  - rolling_7_mean: shap=1418.0284, val=3675.5714285714284
+  - lag_1: shap=599.5096, val=3251.0
+  - onpromotion: shap=208.0509, val=41
+  - lag_7: shap=193.4116, val=2215.0
+  - rolling_14_mean: shap=161.6646, val=3520.1428571428573
+ Top negative contributors:
+  - transactions: shap=-409.2628, val=706.0
+  - dayofweek: shap=-32.3408, val=2
+  - dow_sin: shap=-19.0408, val=0.9749279121818236
+  - day: shap=-17.2346, val=17
+  - rolling_14_std: shap=-14.6040, val=770.8670300525142
+
+
+Point 3 | date=2017-06-11 00:00:00 | store=54 | family=BEVERAGES
+ True=13889.00 Pred=3295.60 AbsResid=10593.40
+ Top positive contributors:
+  - rolling_7_mean: shap=1575.0740, val=3748.0
+  - lag_1: shap=814.8458, val=2426.0
+  - lag_7: shap=725.4212, val=4605.0
+  - dayofweek: shap=153.9305, val=6
+  - rolling_14_mean: shap=128.4277, val=2836.5714285714284
+ Top negative contributors:
+  - transactions: shap=-278.4195, val=1172.0
+  - rolling_7_std: shap=-259.0622, val=3528.9432790378864
+  - lag_28: shap=-86.8116, val=2368.0
+  - day: shap=-53.7881, val=11
+  - lag_14: shap=-47.5956, val=2683.0
+
+
+Point 4 | date=2017-07-10 00:00:00 | store=30 | family=CLEANING
+ True=10392.00 Pred=880.18 AbsResid=9511.82
+ Top positive contributors:
+  - rolling_7_mean: shap=203.2767, val=892.2857142857143
+  - onpromotion: shap=143.6242, val=23
+  - rolling_14_mean: shap=103.6804, val=1432.142857142857
+  - lag_14: shap=88.0054, val=2425.0
+  - cluster: shap=52.2480, val=3
+ Top negative contributors:
+  - transactions: shap=-62.5116, val=796.0
+  - rolling_14_std: shap=-44.5108, val=1418.8478997543616
+  - lag_28: shap=-41.2577, val=416.0
+  - day: shap=-18.8772, val=10
+  - lag_7: shap=-9.4161, val=548.0
+
+
+Point 5 | date=2017-06-05 00:00:00 | store=54 | family=BEVERAGES
+ True=11428.00 Pred=2528.58 AbsResid=8899.42
+ Top positive contributors:
+  - lag_1: shap=1130.6056, val=4605.0
+  - rolling_7_mean: shap=797.8193, val=2199.714285714286
+  - rolling_14_mean: shap=201.6006, val=2022.0714285714287
+  - onpromotion: shap=165.7963, val=32
+  - cluster: shap=122.2752, val=3
+ Top negative contributors:
+  - transactions: shap=-285.8419, val=953.0
+  - lag_14: shap=-50.2928, val=1886.0
+  - dayofweek: shap=-31.7944, val=0
+  - rolling_14_std: shap=-23.7605, val=865.6322246495029
+  - dcoilwtico: shap=-20.2614, val=47.4
+
+
+Point 6 | date=2017-06-18 00:00:00 | store=38 | family=BEVERAGES
+ True=12571.00 Pred=3688.94 AbsResid=8882.06
+ Top positive contributors:
+  - rolling_7_mean: shap=1360.3271, val=2457.8571428571427
+  - lag_1: shap=832.7099, val=3351.0
+  - lag_7: shap=675.9901, val=3651.0
+  - lag_14: shap=154.1870, val=4350.0
+  - transactions: shap=132.8860, val=2131.0
+ Top negative contributors:
+  - state: shap=-87.8398, val=Loja
+  - rolling_14_std: shap=-27.2617, val=966.0230811976427
+  - day: shap=-15.9925, val=18
+  - rolling_7_std: shap=-12.3331, val=916.2824216312791
+  - weekofyear: shap=-11.2688, val=24
+
+
+Point 7 | date=2017-07-15 00:00:00 | store=38 | family=BEVERAGES
+ True=12734.00 Pred=4611.54 AbsResid=8122.46
+ Top positive contributors:
+  - lag_1: shap=1853.7381, val=9425.0
+  - rolling_7_mean: shap=1629.2067, val=3425.5714285714284
+  - lag_7: shap=393.2592, val=3122.0
+  - onpromotion: shap=382.0825, val=46
+  - dayofweek: shap=200.2432, val=5
+ Top negative contributors:
+  - cluster: shap=-182.9584, val=4
+  - day: shap=-128.0588, val=15
+  - state: shap=-87.4334, val=Loja
+  - transactions: shap=-70.2049, val=1957.0
+  - weekofyear: shap=-45.1560, val=28
+
+
+Point 8 | date=2017-06-14 00:00:00 | store=39 | family=GROCERY I
+ True=12284.19 Pred=4726.83 AbsResid=7557.36
+ Top positive contributors:
+  - rolling_7_mean: shap=2692.5312, val=7861.237714285715
+  - lag_1: shap=1341.9991, val=11518.219
+  - lag_7: shap=1051.1217, val=7122.859
+  - lag_14: shap=617.9656, val=11695.359
+  - onpromotion: shap=502.7847, val=100
+ Top negative contributors:
+  - transactions: shap=-1619.6229, val=1239.0
+  - day: shap=-229.7665, val=14
+  - dayofweek: shap=-153.1744, val=2
+  - rolling_7_std: shap=-61.8620, val=1966.4297009845054
+  - weekofyear: shap=-34.6512, val=24
+
+
+Point 9 | date=2017-05-21 00:00:00 | store=16 | family=CLEANING
+ True=8817.00 Pred=1302.55 AbsResid=7514.45
+ Top positive contributors:
+  - rolling_7_mean: shap=444.8197, val=1553.0
+  - lag_1: shap=223.9880, val=1056.0
+  - onpromotion: shap=189.2827, val=31
+  - rolling_14_mean: shap=74.9884, val=1226.9285714285713
+  - cluster: shap=57.8707, val=3
+ Top negative contributors:
+  - transactions: shap=-135.8844, val=930.0
+  - rolling_14_std: shap=-20.2185, val=1104.5593248883467
+  - dcoilwtico: shap=-19.1094, val=50.32
+  - rolling_7_std: shap=-17.7513, val=1517.3162711401558
+  - weekofyear: shap=-7.8074, val=20
+
+
+Point 10 | date=2017-06-20 00:00:00 | store=47 | family=BEVERAGES
+ True=14764.00 Pred=7448.64 AbsResid=7315.36
+ Top positive contributors:
+  - rolling_7_mean: shap=3424.9857, val=9657.857142857143
+  - lag_1: shap=1902.7199, val=7283.0
+  - lag_7: shap=1179.1780, val=8065.0
+  - rolling_14_mean: shap=496.2078, val=9839.142857142857
+  - lag_14: shap=445.0402, val=7983.0
+ Top negative contributors:
+  - cluster: shap=-239.5049, val=14
+  - lag_28: shap=-118.1613, val=6401.0
+  - rolling_7_std: shap=-85.0960, val=3434.0859739078523
+  - month_sin: shap=-69.0525, val=0.49999999999999994
+  - dayofweek: shap=-64.4729, val=1

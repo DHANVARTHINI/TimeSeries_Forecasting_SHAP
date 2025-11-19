@@ -1,0 +1,33 @@
+=== Model & SHAP Report ===
+Generated: 2025-11-19T08:57:57.041672
+
+-- Validation performance --
+RMSE: 201.5717
+MAE: 55.2395
+
+-- Top features by SHAP (mean abs) --
+  rolling_7_mean: 242.4853
+  lag_1: 166.4345
+  lag_7: 104.2822
+  transactions: 41.5455
+  onpromotion: 38.3749
+  lag_14: 31.2030
+  rolling_14_mean: 28.8118
+  day: 15.0077
+  cluster: 14.0537
+  lag_28: 13.0875
+
+-- Top features by LightGBM gain --
+  rolling_7_mean: 10665620512592.0000
+  lag_7: 8168385840150.0000
+  lag_1: 3851008549804.0000
+  lag_14: 1502870010494.0000
+  rolling_14_mean: 550177047128.0000
+  transactions: 544991544398.0000
+  lag_28: 329006316738.0000
+  day: 167101492608.0000
+  dayofweek: 125279640584.0000
+  onpromotion: 119892215457.0000
+
+-- High-level interpretation --
+SHAP mean-abs ranking shows per-sample contribution magnitude. LightGBM gain shows average split gains. Discrepancies can flag frequently used but low-impact features or rare high-impact features.
